@@ -60,15 +60,32 @@ def encryption_key_builder(target, source, env):
         )
         raise
 
-    with methods.generated_wrapper(str(target[0])) as file:
-        file.write(
-            f"""\
-#include <cstdint>
+    import hashlib
+    import random
 
-uint8_t script_encryption_key[32] = {{
-{methods.format_buffer(buffer, 1)}
-}};"""
-        )
+    rng = random.Random(hashlib.sha256(b"pck" + buffer).digest())
+    empty = not any(buffer)
+    masks = [rng.randrange(256) for _ in range(32)]
+    slots = list(range(32))
+    rng.shuffle(slots)
+    mask_slots = list(range(32))
+    rng.shuffle(mask_slots)
+    pieces = [[0] * 8 for _ in range(4)]
+    mask_table = [0] * 32
+    lines = []
+    for i in range(32):
+        piece, offset = divmod(slots[i], 8)
+        pieces[piece][offset] = buffer[i] ^ masks[i] ^ (i * 29 + 7) % 256
+        mask_table[mask_slots[i]] = masks[i]
+        lines.append(f"\tr_key[{i}] = (uint8_t)(_kp{piece}[{offset}] ^ _km[{mask_slots[i]}] ^ {(i * 29 + 7) % 256}u);")
+    rng.shuffle(lines)
+    with methods.generated_wrapper(str(target[0])) as file:
+        file.write("#include <cstdint>\n\n")
+        for piece in range(4):
+            file.write(f"static volatile const uint8_t _kp{piece}[8] = {{ {', '.join(str(b) for b in pieces[piece])} }};\n")
+        file.write(f"static volatile const uint8_t _km[32] = {{ {', '.join(str(b) for b in mask_table)} }};\n\n")
+        file.write(f"bool script_encryption_key_is_empty() {{\n\treturn {'true' if empty else 'false'};\n}}\n\n")
+        file.write("void script_encryption_key_get(uint8_t *r_key) {\n" + "\n".join(lines) + "\n}\n")
 
 
 def make_certs_header(target, source, env):

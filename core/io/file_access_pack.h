@@ -37,8 +37,11 @@
 #include "core/templates/hash_set.h"
 #include "core/templates/list.h"
 
-// Godot's packed file magic header ("GDPC" in ASCII).
+// Packed file magic header ("GDPC" in ASCII), overridable at build time
+// (SCons cppdefines=PACK_HEADER_MAGIC=...).
+#ifndef PACK_HEADER_MAGIC
 #define PACK_HEADER_MAGIC 0x43504447
+#endif
 
 #define PACK_FORMAT_VERSION_V2 2
 #define PACK_FORMAT_VERSION_V3 3

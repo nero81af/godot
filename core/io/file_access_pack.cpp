@@ -36,6 +36,9 @@
 #include "core/os/os.h"
 #include "core/version.h"
 
+bool script_encryption_key_is_empty();
+void script_encryption_key_get(uint8_t *r_key);
+
 Error PackedData::add_pack(const String &p_path, bool p_replace_files, uint64_t p_offset, const Vector<uint8_t> &p_decryption_key) {
 	for (int i = 0; i < sources.size(); i++) {
 		if (sources[i]->try_open_pack(p_path, p_replace_files, p_offset, p_decryption_key)) {
@@ -333,18 +336,18 @@ bool PackedSourcePCK::try_open_pack(const String &p_path, bool p_replace_files, 
 #ifdef TOOLS_ENABLED
 		if (!p_decryption_key.is_empty()) {
 			ERR_FAIL_COND_V_MSG(p_decryption_key.size() != 32, false, "Decryption key must be 256-bit.");
-			constexpr uint8_t empty_key[32] = {};
-			if (memcmp(script_encryption_key, empty_key, sizeof(empty_key)) == 0) {
+			if (script_encryption_key_is_empty()) {
 				key = p_decryption_key;
 			}
 		} else
 #endif
 		{
 			key.resize(32);
-			memcpy(key.ptrw(), script_encryption_key, 32);
+			script_encryption_key_get(key.ptrw());
 		}
 
 		Error err = fae->open_and_parse(f, key, FileAccessEncrypted::MODE_READ, false);
+		memset(key.ptrw(), 0, key.size());
 		ERR_FAIL_COND_V_MSG(err, false, "Can't open encrypted pack directory.");
 		f = fae;
 	}
@@ -561,18 +564,18 @@ FileAccessPack::FileAccessPack(const String &p_path, const PackedData::PackedFil
 #ifdef TOOLS_ENABLED
 		if (!p_decryption_key.is_empty()) {
 			ERR_FAIL_COND_MSG(p_decryption_key.size() != 32, "Decryption key must be 256-bit.");
-			constexpr uint8_t empty_key[32] = {};
-			if (memcmp(script_encryption_key, empty_key, sizeof(empty_key)) == 0) {
+			if (script_encryption_key_is_empty()) {
 				key = p_decryption_key;
 			}
 		} else
 #endif
 		{
 			key.resize(32);
-			memcpy(key.ptrw(), script_encryption_key, 32);
+			script_encryption_key_get(key.ptrw());
 		}
 
 		Error err = fae->open_and_parse(f, key, FileAccessEncrypted::MODE_READ, false);
+		memset(key.ptrw(), 0, key.size());
 		ERR_FAIL_COND_MSG(err != OK, vformat(R"(Can't open encrypted pack-referenced file "%s" from pack "%s" due to error "%s".)", p_path, pf.pack, error_names[err]));
 		f = fae;
 		off = 0;

@@ -104,6 +104,8 @@ Error FileAccessEncrypted::open_and_parse(Ref<FileAccess> p_base, const Vector<u
 			ctx.set_encode_key(key.ptrw(), 256); // Due to the nature of CFB, same key schedule is used for both encryption and decryption!
 			ctx.decrypt_cfb(ds, iv.ptrw(), data.ptrw(), data.ptrw());
 		}
+		memset(key.ptrw(), 0, key.size());
+		key.clear();
 
 		data.resize(length);
 
