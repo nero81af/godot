@@ -43,6 +43,7 @@
 #include "core/input/input.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/image_loader.h"
 #include "core/io/marshalls.h"
 #include "core/io/xml_parser.h"
 #include "core/object/callable_mp.h"
@@ -7172,6 +7173,11 @@ void DisplayServerWindows::_update_tablet_ctx(const String &p_old_driver, const 
 	}
 }
 
+// The project's icons, made with the window class (_create_project_class_icons
+// in the constructor); nullptr for the engine's own.
+static HICON project_icon_big = nullptr;
+static HICON project_icon_small = nullptr;
+
 Error DisplayServerWindows::_create_window(DisplayServerEnums::WindowID p_window_id, DisplayServerEnums::WindowMode p_mode, uint32_t p_flags, const Rect2i &p_rect, bool p_exclusive, DisplayServerEnums::WindowID p_transient_parent, HWND p_parent_hwnd, bool p_no_redirection_bitmap) {
 	DWORD dwExStyle;
 	DWORD dwStyle;
@@ -7269,6 +7275,14 @@ Error DisplayServerWindows::_create_window(DisplayServerEnums::WindowID p_window
 		}
 
 		wd.parent_hwnd = p_parent_hwnd;
+
+		// The project's icon on the window itself before it shows (see
+		// _create_project_class_icons): the taskbar's button then has it at
+		// once, not a blank placeholder till the thread answers WM_GETICON.
+		if (project_icon_big != nullptr) {
+			SendMessage(wd.hWnd, WM_SETICON, ICON_BIG, (LPARAM)project_icon_big);
+			SendMessage(wd.hWnd, WM_SETICON, ICON_SMALL, (LPARAM)project_icon_small);
+		}
 
 		if (has_winrt_queue) {
 			wd.wrt_wd = WinRTUtils::create_wd(wd.hWnd, callable_mp(this, &DisplayServerWindows::_winrt_adv_color_info_cb), wd.id);
@@ -7784,6 +7798,77 @@ void DisplayServerWindows::tablet_set_current_driver(const String &p_driver) {
 	}
 }
 
+// The game's windows are born with the project's icon (application/config/icon)
+// as their class icon, never the engine's: the taskbar falls back to the class
+// icon while the window's thread is busy loading and cannot answer WM_GETICON,
+// so a project icon set later (Main::start, after the main scene) showed
+// Godot's for seconds. The icon always comes from the project. Both sizes are
+// made here: with no hIconSm Windows looks the small one up in the module's
+// resources, which an icon built in memory has not (a blank icon on the
+// taskbar). False when the project has none or it does not load.
+static bool _create_project_class_icons(HICON &r_big, HICON &r_small) {
+	ProjectSettings *ps = ProjectSettings::get_singleton();
+	if (ps == nullptr) {
+		return false;
+	}
+	String icon_path = ps->get_setting("application/config/icon", String());
+	if (icon_path.is_empty()) {
+		return false;
+	}
+	Ref<Image> img;
+	img.instantiate();
+	if (ImageLoader::load_image(icon_path, img) != OK || img->get_width() <= 0 || img->get_height() <= 0) {
+		return false;
+	}
+	img->convert(Image::FORMAT_RGBA8);
+
+	int w = img->get_width();
+	int h = img->get_height();
+	int icon_len = 40 + h * w * 4;
+	Vector<BYTE> buffer;
+	buffer.resize(icon_len);
+	BYTE *icon_bmp = buffer.ptrw();
+
+	encode_uint32(40, &icon_bmp[0]);
+	encode_uint32(w, &icon_bmp[4]);
+	encode_uint32(h * 2, &icon_bmp[8]);
+	encode_uint16(1, &icon_bmp[12]);
+	encode_uint16(32, &icon_bmp[14]);
+	encode_uint32(BI_RGB, &icon_bmp[16]);
+	encode_uint32(w * h * 4, &icon_bmp[20]);
+	encode_uint32(0, &icon_bmp[24]);
+	encode_uint32(0, &icon_bmp[28]);
+	encode_uint32(0, &icon_bmp[32]);
+	encode_uint32(0, &icon_bmp[36]);
+
+	uint8_t *wr = &icon_bmp[40];
+	const uint8_t *r = img->get_data().ptr();
+	for (int i = 0; i < h; i++) {
+		for (int j = 0; j < w; j++) {
+			const uint8_t *rpx = &r[((h - i - 1) * w + j) * 4];
+			uint8_t *wpx = &wr[(i * w + j) * 4];
+			wpx[0] = rpx[2];
+			wpx[1] = rpx[1];
+			wpx[2] = rpx[0];
+			wpx[3] = rpx[3];
+		}
+	}
+	r_big = CreateIconFromResourceEx(icon_bmp, icon_len, TRUE, 0x00030000, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
+	r_small = CreateIconFromResourceEx(icon_bmp, icon_len, TRUE, 0x00030000, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+	if (r_big == nullptr || r_small == nullptr) {
+		if (r_big) {
+			DestroyIcon(r_big);
+		}
+		if (r_small) {
+			DestroyIcon(r_small);
+		}
+		r_big = nullptr;
+		r_small = nullptr;
+		return false;
+	}
+	return true;
+}
+
 DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error) {
 	KeyMappingWindows::initialize();
 
@@ -7947,7 +8032,16 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Dis
 
 	OleInitialize(nullptr);
 
-	HICON default_icon = LoadIconW(GetModuleHandle(nullptr), L"GODOT_ICON");
+	HICON default_icon = nullptr;
+	HICON default_icon_small = nullptr;
+	if (p_context == DisplayServerEnums::CONTEXT_ENGINE) {
+		_create_project_class_icons(default_icon, default_icon_small);
+		project_icon_big = default_icon;
+		project_icon_small = default_icon_small;
+	}
+	if (default_icon == nullptr) {
+		default_icon = LoadIconW(GetModuleHandle(nullptr), L"GODOT_ICON");
+	}
 	if (default_icon == nullptr) {
 		default_icon = LoadIcon(nullptr, IDI_WINLOGO);
 	}
@@ -7960,6 +8054,7 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Dis
 	wc.cbWndExtra = 0;
 	wc.hInstance = hInstance ? hInstance : GetModuleHandle(nullptr);
 	wc.hIcon = default_icon;
+	wc.hIconSm = default_icon_small;
 	wc.hCursor = nullptr;
 	wc.hbrBackground = nullptr;
 	wc.lpszMenuName = nullptr;
